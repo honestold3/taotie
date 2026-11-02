@@ -68,10 +68,7 @@ pub fn init() -> Result<()> {
 pub fn record(status: u16, elapsed: Duration) {
     if let Some(metrics) = METRICS.get() {
         let status = status.to_string();
-        metrics
-            .requests
-            .with_label_values(&[status.as_str()])
-            .inc();
+        metrics.requests.with_label_values(&[status.as_str()]).inc();
         metrics
             .duration
             .with_label_values(&[status.as_str()])

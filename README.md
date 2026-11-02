@@ -152,6 +152,10 @@ kcat -b localhost:9092 -t bury-track -C -o beginning -e
 
 - Rust 1.99+（edition 2024）
 - `cmake`、C 编译器（`librdkafka` 通过 `rdkafka` 的 `cmake-build` 特性内置编译，**无需**单独安装 librdkafka）
+- Linux 还需 curl 头文件（Debian/Ubuntu：`libcurl4-openssl-dev`）。librdkafka 2.12.1 的
+  `rdkafka_conf.c` 用 `#ifdef` 判断 `WITH_OAUTHBEARER_OIDC`，而 `config.h` 总会把它定义成 0，
+  因此会无条件包含 `<curl/curl.h>`；即使 `WITH_CURL=0` 也需要头文件（不会链接 curl）。
+  macOS 的 SDK 自带该头文件，无需额外安装。
 - 不依赖 OpenSSL：当前为 PLAINTEXT 连接，`rdkafka` 未启用 `ssl` feature
 
 "> macOS 提示：本机 `.zshrc` 若仍有失效的 `CC`/`CXX`，构建前先执行 `cc-system` 切换到系统 clang。
