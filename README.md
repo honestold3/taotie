@@ -1,6 +1,6 @@
 # Taotie（饕餮）
 
-埋点接收网关。兼容原有 SpringBoot 服务 `https://bigdata-up.bjx.com.cn/bigData/receiveGet`，
+埋点接收网关。兼容原有 SpringBoot 服务 `https://bigdata-up.xxx.com.cn/bigData/receiveGet`，
 接收前端 js-sdk 通过 HTTP GET 上报的 base64 埋点数据，解码、校验后投递到 Kafka。
 
 前端埋点**无需修改任何上报地址**，直接切流量即可。

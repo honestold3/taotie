@@ -16,7 +16,7 @@ def build(i: int) -> dict:
         "distinct_id": f"bench-{i}",
         "lib": {"$lib": "js", "$lib_method": "code", "$lib_version": "1.25.11"},
         "properties": {
-            "$url": "https://dljob.bjx.com.cn/",
+            "$url": "https://dljob.xxx.com.cn/",
             "$title": "压测页面",
             "n": i,
         },
