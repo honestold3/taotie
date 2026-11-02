@@ -7,9 +7,11 @@ ARG RUNTIME_IMAGE=debian:bullseye-slim
 
 FROM ${BUILDER_IMAGE} AS builder
 
-# librdkafka 通过 cmake 内置编译，需要 cmake / C 编译器 / zlib 头文件
+# librdkafka 通过 cmake 内置编译，需要 cmake / C 编译器 / zlib 头文件。
+# libcurl4-openssl-dev 是必需的：librdkafka 2.12.1 的 rdkafka_conf.c 用 #ifdef 判断
+# WITH_OAUTHBEARER_OIDC，而 config.h 总会把它定义成 0，导致无条件 include <curl/curl.h>。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake gcc g++ zlib1g-dev \
+    && apt-get install -y --no-install-recommends cmake gcc g++ zlib1g-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

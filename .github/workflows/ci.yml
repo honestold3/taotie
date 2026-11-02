@@ -24,11 +24,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # rdkafka 启用 cmake-build，会在构建时编译内置 librdkafka
+      # rdkafka 启用 cmake-build，会在构建时编译内置 librdkafka。
+      # libcurl4-openssl-dev 是必需的：librdkafka 2.12.1 的 rdkafka_conf.c 用 #ifdef
+      # 判断 WITH_OAUTHBEARER_OIDC，而 config.h 总会把它定义成 0，导致无条件
+      # include <curl/curl.h>；WITH_CURL=0 所以只需要头文件、不会链接 curl。
       - name: 安装 librdkafka 构建依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake build-essential zlib1g-dev
+          sudo apt-get install -y --no-install-recommends cmake build-essential zlib1g-dev libcurl4-openssl-dev
 
       # 与 Cargo.toml 的 rust-version 保持一致
       - uses: dtolnay/rust-toolchain@1.99.1
