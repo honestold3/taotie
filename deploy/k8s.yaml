@@ -1,0 +1,145 @@
+# Taotie 埋点网关 Kubernetes 部署清单
+#
+# 使用前请修改：
+#   1. Deployment 中的 image 地址
+#   2. ConfigMap 中的 Kafka brokers / topic
+#
+# 部署：
+#   kubectl apply -f deploy/k8s.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: taotie-config
+  labels:
+    app: taotie
+data:
+  config.toml: |
+    listen_addr = "0.0.0.0:8080"
+
+    [kafka]
+    brokers = "kafka:9092"        # TODO: 改成实际 Kafka 地址
+    topic = "bury-track"
+    key = "track"
+    acks = "1"
+    queue_buffering_ms = 5
+    compression = "lz4"
+    send_timeout_ms = 3000
+    queue_timeout_ms = 100
+    shutdown_flush_ms = 5000
+
+    [log]
+    level = "warn"
+    # K8s 只采集 stdout，关闭文件日志
+    file = false
+    dir = "logs"
+    file_prefix = "taotie"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taotie
+  labels:
+    app: taotie
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: taotie
+  template:
+    metadata:
+      labels:
+        app: taotie
+      annotations:
+        # Prometheus 注解式抓取（使用 ServiceMonitor 时可删除）
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      # 必须大于 shutdown_flush_ms + 在途请求处理时间
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: taotie
+          image: registry.example.com/taotie:0.1.0   # TODO: 改成实际镜像
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: TAOTIE_CONFIG
+              value: /etc/taotie/config.toml
+          volumeMounts:
+            - name: config
+              mountPath: /etc/taotie
+              readOnly: true
+          lifecycle:
+            # 让 Service 先摘除流量，再开始优雅退出
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          readinessProbe:
+            # /readyz 会探测 Kafka 与 topic 是否可用
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            # /healthz 只反映进程存活，避免 Kafka 抖动导致 Pod 被反复重启
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "1"
+              memory: "128Mi"
+            limits:
+              # 不设 CPU limit，避免 CFS 限流造成 P99 抖动
+              memory: "512Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: config
+          configMap:
+            name: taotie-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: taotie
+  labels:
+    app: taotie
+spec:
+  type: ClusterIP
+  selector:
+    app: taotie
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: taotie
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: taotie

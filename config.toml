@@ -1,0 +1,35 @@
+# Taotie 埋点网关配置
+# 可用环境变量 TAOTIE_CONFIG 指定其他配置文件路径
+
+# HTTP 监听地址
+listen_addr = "0.0.0.0:8080"
+
+[kafka]
+# Kafka 集群地址
+brokers = "localhost:9092"
+# 埋点数据写入的 topic
+topic = "bury-track"
+# 消息 key
+key = "track"
+# ack 级别
+acks = "1"
+# 批量发送的最大等待时间（毫秒），对应 librdkafka queue.buffering.max.ms
+queue_buffering_ms = 5
+# 消息压缩算法：lz4 / snappy / zstd / gzip / none
+compression = "lz4"
+# 单条消息最长投递时间（毫秒），超时返回 503
+send_timeout_ms = 3000
+# 本地队列满时的等待时间（毫秒），超时返回 503
+queue_timeout_ms = 100
+# 优雅退出时等待队列刷盘的最长时间（毫秒）
+shutdown_flush_ms = 5000
+
+[log]
+# 日志级别：trace / debug / info / warn / error（RUST_LOG 可覆盖）
+# 生产建议 warn：只记录 400 校验失败与 503 投递失败，成功请求不落盘
+level = "warn"
+# 日志目录，按天滚动为 logs/taotie.YYYY-MM-DD.log
+dir = "logs"
+file_prefix = "taotie"
+# 是否写文件日志；K8s 等只采集 stdout 的环境建议 false
+file = true
