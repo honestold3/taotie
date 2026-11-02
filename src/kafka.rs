@@ -22,10 +22,7 @@ impl Producer {
     pub fn new(cfg: &KafkaConfig) -> Result<Self> {
         let inner: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", &cfg.brokers)
-            .set(
-                "queue.buffering.max.ms",
-                cfg.queue_buffering_ms.to_string(),
-            )
+            .set("queue.buffering.max.ms", cfg.queue_buffering_ms.to_string())
             .set("acks", &cfg.acks)
             .set("compression.type", &cfg.compression)
             // 限制单条消息的投递时间，保证 Kafka 不可达时能及时返回 503

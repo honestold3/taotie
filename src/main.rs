@@ -38,7 +38,10 @@ async fn main() -> Result<()> {
         .with_context(|| format!("监听 {} 失败", cfg.listen_addr))?;
     let addr = listener.local_addr()?;
     // 监听地址用 println 直出：无论日志级别如何都能看到，便于部署时确认
-    println!("taotie 启动，监听 http://{addr}（brokers={} topic={}）", cfg.kafka.brokers, cfg.kafka.topic);
+    println!(
+        "taotie 启动，监听 http://{addr}（brokers={} topic={}）",
+        cfg.kafka.brokers, cfg.kafka.topic
+    );
     tracing::info!(
         listen = %format!("http://{addr}"),
         brokers = %cfg.kafka.brokers,

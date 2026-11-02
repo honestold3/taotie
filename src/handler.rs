@@ -137,10 +137,8 @@ async fn process(state: &AppState, raw: Option<String>, start: Instant) -> (Stat
         return bad_request(format!("埋点字段校验失败: {report}"));
     }
 
-    // ext 原样附加到埋点 JSON 中（不改动已有字段）
-    if let Some(ext) = query_param(&raw, "ext") {
-        bury.extra.insert("ext".to_string(), Value::String(ext));
-    }
+    // ext 原样附加到埋点 JSON 中（数据里已有 ext 字段时会被覆盖）
+    attach_ext(&mut bury, query_param(&raw, "ext").as_deref());
 
     let payload = match simd_json::serde::to_vec(&bury) {
         Ok(payload) => payload,
@@ -172,6 +170,14 @@ async fn process(state: &AppState, raw: Option<String>, start: Instant) -> (Stat
                 format!("kafka 投递失败: {e}"),
             )
         }
+    }
+}
+
+/// 把 query 中的 `ext` 附加到埋点 JSON 的顶层字段中（已有 `ext` 会被覆盖）。
+fn attach_ext(bury: &mut BuryEvent, ext: Option<&str>) {
+    if let Some(ext) = ext {
+        bury.extra
+            .insert("ext".to_string(), Value::String(ext.to_string()));
     }
 }
 
@@ -246,5 +252,253 @@ fn hex(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 一条字段完整的合法埋点，`custom_field` 用于验证未知字段透传
+    const VALID: &str = r#"{"identities":{"$device_id":"d1"},"distinct_id":"u1","lib":{"$lib":"js-sdk"},"properties":{"page":"/home"},"anonymous_id":"a1","type":"track","event":"$pageview","time":1787725281606,"_track_id":737861607,"_flush_time":1787725281607,"custom_field":{"nested":[1,2,3]}}"#;
+
+    /// 走与线上一致的路径：base64 编码 → 解码 → simd-json 原地解析
+    fn parse_json(json: &str) -> Result<BuryEvent, (StatusCode, String)> {
+        let encoded = STANDARD.encode(json);
+        let mut buf = STANDARD
+            .decode(encoded.as_bytes())
+            .expect("测试数据编码失败");
+        parse_event(&mut buf, &encoded)
+    }
+
+    fn classify(raw: &str) -> String {
+        classify_parse_error(raw).1
+    }
+
+    // ---------- query 参数解析 ----------
+
+    #[test]
+    fn query_param_finds_each_key() {
+        let q = "data=abc&ext=crc%3D1";
+        assert_eq!(query_param(q, "data").as_deref(), Some("abc"));
+        assert_eq!(query_param(q, "ext").as_deref(), Some("crc=1"));
+    }
+
+    #[test]
+    fn query_param_missing_key_returns_none() {
+        assert_eq!(query_param("ext=1", "data"), None);
+        assert_eq!(query_param("", "data"), None);
+    }
+
+    #[test]
+    fn query_param_bare_key_and_empty_value() {
+        assert_eq!(query_param("data", "data").as_deref(), Some(""));
+        assert_eq!(query_param("data=", "data").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn query_param_keeps_plus_as_literal() {
+        // base64 字母表包含 '+'，不能按表单规则转成空格（与老服务行为一致）
+        assert_eq!(query_param("data=a+b", "data").as_deref(), Some("a+b"));
+    }
+
+    #[test]
+    fn query_param_decodes_percent_encoded_plus() {
+        assert_eq!(query_param("data=a%2Bb", "data").as_deref(), Some("a+b"));
+    }
+
+    #[test]
+    fn query_param_keeps_equals_sign_in_value() {
+        assert_eq!(
+            query_param("data=YQ==&ext=1", "data").as_deref(),
+            Some("YQ==")
+        );
+    }
+
+    #[test]
+    fn query_param_duplicate_key_takes_first() {
+        assert_eq!(query_param("data=1&data=2", "data").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn query_param_invalid_escape_falls_back_to_raw_value() {
+        assert_eq!(query_param("data=%zz", "data").as_deref(), Some("%zz"));
+        assert_eq!(query_param("data=%2", "data").as_deref(), Some("%2"));
+    }
+
+    #[test]
+    fn query_param_requires_exact_key() {
+        assert_eq!(query_param("dat=1", "data"), None);
+    }
+
+    #[test]
+    fn percent_decode_hex_is_case_insensitive() {
+        assert_eq!(percent_decode("%41%61").as_deref(), Some("Aa"));
+        assert_eq!(percent_decode("%4a").as_deref(), Some("J"));
+    }
+
+    #[test]
+    fn percent_decode_rejects_bad_input() {
+        assert_eq!(percent_decode("%zz"), None);
+        assert_eq!(percent_decode("%2"), None);
+        // 0xFF 解出来不是合法 UTF-8
+        assert_eq!(percent_decode("%ff"), None);
+    }
+
+    #[test]
+    fn percent_decode_plain_text_is_unchanged() {
+        assert_eq!(percent_decode("abc+/=").as_deref(), Some("abc+/="));
+    }
+
+    // ---------- 错误分类 ----------
+
+    #[test]
+    fn classify_reports_invalid_base64() {
+        assert_eq!(classify("!!!"), "data 不是合法的 base64");
+    }
+
+    #[test]
+    fn classify_reports_invalid_utf8() {
+        let data = STANDARD.encode([0xff, 0xfe, 0xfd]);
+        assert_eq!(classify(&data), "data 解码后不是合法的 UTF-8 字符串");
+    }
+
+    #[test]
+    fn classify_reports_invalid_json() {
+        assert_eq!(
+            classify(&STANDARD.encode("{not json")),
+            "data 解码后不是合法的 JSON"
+        );
+    }
+
+    #[test]
+    fn classify_reports_missing_fields() {
+        assert_eq!(
+            classify(&STANDARD.encode("{}")),
+            "埋点数据缺少必要字段或字段类型错误"
+        );
+    }
+
+    // ---------- 埋点解析 ----------
+
+    #[test]
+    fn parses_valid_event() {
+        let bury = parse_json(VALID).expect("合法埋点应解析成功");
+        assert_eq!(bury.distinct_id, "u1");
+        assert_eq!(bury.anonymous_id, "a1");
+        assert_eq!(bury.r#type, "track");
+        assert_eq!(bury.event, "$pageview");
+        assert_eq!(bury.time, 1787725281606);
+        assert_eq!(bury.track_id, 737861607);
+        assert_eq!(bury.flush_time, 1787725281607);
+    }
+
+    #[test]
+    fn keeps_unknown_fields() {
+        let bury = parse_json(VALID).unwrap();
+        assert_eq!(
+            bury.extra.get("custom_field"),
+            Some(&serde_json::json!({"nested": [1, 2, 3]}))
+        );
+    }
+
+    #[test]
+    fn rejects_missing_required_field() {
+        let json = r#"{"identities":{},"distinct_id":"u1","anonymous_id":"a1","type":"track"}"#;
+        let (status, msg) = parse_json(json).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(msg, "埋点数据缺少必要字段或字段类型错误");
+    }
+
+    #[test]
+    fn rejects_wrong_field_type() {
+        let json = r#"{"identities":[],"distinct_id":"u1","lib":{},"properties":{},"anonymous_id":"a1","type":"track","event":"e","time":1,"_track_id":2,"_flush_time":3}"#;
+        let (status, msg) = parse_json(json).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(msg, "埋点数据缺少必要字段或字段类型错误");
+    }
+
+    #[test]
+    fn rejects_non_integer_time() {
+        // 当前实现要求 time 为整数（老服务 Jackson 可能更宽松）
+        let json = r#"{"identities":{},"distinct_id":"u1","lib":{},"properties":{},"anonymous_id":"a1","type":"track","event":"e","time":"1787725281606","_track_id":2,"_flush_time":3}"#;
+        assert!(parse_json(json).is_err());
+    }
+
+    // ---------- 字段校验 ----------
+
+    #[test]
+    fn valid_event_passes_validation() {
+        let bury = parse_json(VALID).unwrap();
+        assert!(bury.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_required_strings() {
+        let cases = [
+            (
+                "distinct_id",
+                VALID.replace("\"distinct_id\":\"u1\"", "\"distinct_id\":\"\""),
+            ),
+            (
+                "anonymous_id",
+                VALID.replace("\"anonymous_id\":\"a1\"", "\"anonymous_id\":\"\""),
+            ),
+            ("type", VALID.replace("\"type\":\"track\"", "\"type\":\"\"")),
+            (
+                "event",
+                VALID.replace("\"event\":\"$pageview\"", "\"event\":\"\""),
+            ),
+        ];
+
+        for (field, json) in cases {
+            let bury = parse_json(&json).unwrap();
+            let report = format!("{}", bury.validate().unwrap_err());
+            assert!(report.contains(field), "{field} 应为空，实际报错: {report}");
+        }
+    }
+
+    // ---------- ext 合并与序列化 ----------
+
+    #[test]
+    fn attach_ext_inserts_field() {
+        let mut bury = parse_json(VALID).unwrap();
+        attach_ext(&mut bury, Some("crc=1538298110"));
+        assert_eq!(
+            bury.extra.get("ext"),
+            Some(&Value::String("crc=1538298110".to_string()))
+        );
+    }
+
+    #[test]
+    fn attach_ext_none_leaves_payload_untouched() {
+        let mut bury = parse_json(VALID).unwrap();
+        let before = bury.extra.len();
+        attach_ext(&mut bury, None);
+        assert_eq!(bury.extra.len(), before);
+        assert!(bury.extra.get("ext").is_none());
+    }
+
+    #[test]
+    fn attach_ext_overwrites_existing_field() {
+        // 当前语义：query 中的 ext 优先于数据里自带的 ext
+        let mut bury = parse_json(VALID).unwrap();
+        attach_ext(&mut bury, Some("old"));
+        attach_ext(&mut bury, Some("new"));
+        assert_eq!(
+            bury.extra.get("ext"),
+            Some(&Value::String("new".to_string()))
+        );
+    }
+
+    #[test]
+    fn serialized_payload_keeps_unknown_fields_and_ext() {
+        let mut bury = parse_json(VALID).unwrap();
+        attach_ext(&mut bury, Some("crc=1"));
+        let out = simd_json::serde::to_vec(&bury).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\"custom_field\""));
+        assert!(text.contains("\"ext\":\"crc=1\""));
+        assert!(text.contains("\"_track_id\":737861607"));
     }
 }
