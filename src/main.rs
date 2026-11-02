@@ -24,6 +24,11 @@ use tracing_subscriber::prelude::*;
 use crate::config::{AppConfig, LogConfig};
 use crate::handler::AppState;
 
+/// 全局分配器：高频短命小对象（每个请求的 String / Vec）对分配器压力较大，
+/// mimalloc 在多线程下的分配/回收和碎片表现都优于 glibc malloc。
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = AppConfig::load()?;
